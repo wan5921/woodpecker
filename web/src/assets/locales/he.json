@@ -1,0 +1,25 @@
+{
+  "global": {
+    "connect_with_provider": "התחבר עם {{provider}}",
+    "user_menu": "תפריט משתמש",
+    "home": "בית",
+    "repos": "מאגרים",
+    "admin": "מנהל",
+    "logout": "התנתק"
+  },
+  "repo": {
+    "pipelines": "צינורות",
+    "settings": "הגדרות",
+    "branches": "ענפים",
+    "pull_requests": "בקשות משיכה"
+  },
+  "pipeline": {
+    "status": {
+      "success": "הצלחה",
+      "failure": "כישלון",
+      "running": "פועל",
+      "pending": "ממתין",
+      "error": "שגיאה"
+    }
+  }
+}

@@ -5,6 +5,8 @@ import { createI18n } from 'vue-i18n';
 
 import { useDate } from './useDate';
 
+const RTL_LOCALES = ['he', 'ar', 'fa', 'ur'];
+
 export function getUserLanguage(): string {
   let browserLocale = navigator.language;
   if (!SUPPORTED_LOCALES.includes(browserLocale)) {
@@ -39,6 +41,14 @@ export const setI18nLanguage = async (lang: string): Promise<void> => {
   }
   i18n.global.locale.value = lang;
   await setDateLocale(lang);
+
+  if (RTL_LOCALES.includes(lang)) {
+    document.documentElement.dir = 'rtl';
+    document.documentElement.lang = lang;
+  } else {
+    document.documentElement.dir = 'ltr';
+    document.documentElement.lang = lang;
+  }
 };
 
 loadLocaleMessages(fallbackLocale).catch(console.error);
