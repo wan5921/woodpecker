@@ -1,0 +1,109 @@
+diff --git a/Untitled-1.go b/Untitled-1.go
+new file mode 100644
+index 000000000..3573e069c
+--- /dev/null
++++ b/Untitled-1.go
+@@ -0,0 +1,44 @@
++// CI 配置结构体定义
++type PipelineConfig struct {
++    Matrix map[string][]string `yaml:"matrix,omitempty"`
++    Steps  []Step              `yaml:"steps"`
++    // ... 其他全局配置
++}
++
++type Step struct {
++    Name     string            `yaml:"name"`
++    Image    string            `yaml:"image"`
++    Commands []string          `yaml:"commands"`
++    Env      map[string]string `yaml:"environment,omitempty"`
++}
++
++// 矩阵生成伪代码
++func GenerateMatrixPipelines(base *PipelineConfig) []*PipelineConfig {
++    if len(base.Matrix) == 0 {
++        return []*PipelineConfig{base}
++    }
++
++    // 1. 计算所有矩阵维度的笛卡尔积（如 go: [1.21, 1.22] 和 os: [linux]）
++    combinations := generateCartesianProduct(base.Matrix)
++
++    var pipelines []*PipelineConfig
++    // 2. 遍历每一个组合，生成独立的流水线配置
++    for _, combo := range combinations {
++        // 深拷贝基础配置
++        newConfig := cloneConfig(base)
++
++        // 3. 将矩阵变量注入到每个步骤的环境变量中
++        for i := range newConfig.Steps {
++            if newConfig.Steps[i].Env == nil {
++                newConfig.Steps[i].Env = make(map[string]string)
++            }
++            for key, val := range combo {
++                // 注入环境变量，例如 GO_VERSION=1.21
++                newConfig.Steps[i].Env[key] = val
++            }
++        }
++        pipelines = append(pipelines, newConfig)
++    }
++
++    return pipelines
++}
+diff --git "a/import \"context\".go" "b/import \"context\".go"
+new file mode 100644
+index 000000000..cea55642c
+--- /dev/null
++++ "b/import \"context\".go"	
+@@ -0,0 +1,53 @@
++import "context"
++
++// ========== 1. 接口新旧对比 ==========
++
++// PluginV1 旧版插件接口（同步、无上下文控制）
++type PluginV1 interface {
++    Exec() error
++}
++
++// PluginV2 新版插件接口（支持异步上下文、结构化返回）
++type PluginV2 interface {
++    Execute(ctx context.Context) (*PluginResult, error)
++}
++
++type PluginResult struct {
++    Status  string
++    Outputs map[string]string
++}
++
++// ========== 2. 适配器实现 ==========
++
++// PluginV1Adapter 将 V1 插件无缝适配到 V2 架构
++type PluginV1Adapter struct {
++    legacyPlugin PluginV1
++}
++
++func NewPluginAdapter(v1 PluginV1) PluginV2 {
++    return &PluginV1Adapter{
++        legacyPlugin: v1,
++    }
++}
++
++// Execute 满足 V2 接口，内部执行 V1 逻辑
++func (a *PluginV1Adapter) Execute(ctx context.Context) (*PluginResult, error) {
++    errCh := make(chan error, 1)
++
++    // 使用 goroutine 执行旧版阻塞代码
++    go func() {
++        errCh <- a.legacyPlugin.Exec()
++    }()
++
++    select {
++    case <-ctx.Done():
++        // 支持 V2 的超时与取消特性
++        return &PluginResult{Status: "cancelled"}, ctx.Err()
++    case err := <-errCh:
++        if err != nil {
++            return &PluginResult{Status: "failure"}, err
++        }
++        // V1 无 Outputs 输出，返回默认成功状态
++        return &PluginResult{Status: "success", Outputs: map[string]string{}}, nil
++    }
++}
