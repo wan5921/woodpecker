@@ -1,0 +1,619 @@
+diff --git a/pipeline/frontend/yaml/matrix/expand.go b/pipeline/frontend/yaml/matrix/expand.go
+new file mode 100644
+index 000000000..f93f8a63f
+--- /dev/null
++++ b/pipeline/frontend/yaml/matrix/expand.go
+@@ -0,0 +1,205 @@
++// Copyright 2026 Woodpecker Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package matrix
++
++import (
++	"fmt"
++	"sort"
++	"strings"
++
++	"go.woodpecker-ci.org/woodpecker/v3/pipeline/frontend/yaml/types"
++)
++
++// Expand takes a workflow with matrix configuration and returns expanded workflows.
++// Example input:
++//
++//	matrix:
++//	  go: [1.21, 1.22, 1.23]
++//	  os: [linux, windows]
++//
++// Returns 6 workflows (3 go versions × 2 OSes).
++func Expand(workflow *types.Workflow) ([]*types.MatrixWorkflow, error) {
++	if !workflow.Matrix.HasMatrix() {
++		return nil, nil
++	}
++
++	keys := make([]string, 0, len(workflow.Matrix))
++	for k := range workflow.Matrix {
++		keys = append(keys, k)
++	}
++	sort.Strings(keys)
++
++	matrixValues := make([][]string, 0, len(keys))
++	for _, k := range keys {
++		matrixValues = append(matrixValues, workflow.Matrix[k])
++	}
++
++	combinations := cartesianProduct(matrixValues)
++
++	result := make([]*types.MatrixWorkflow, 0, len(combinations))
++	for _, combo := range combinations {
++		vars := make(map[string]string)
++		nameParts := make([]string, 0, len(keys))
++
++		for i, key := range keys {
++			vars[key] = combo[i]
++			nameParts = append(nameParts, fmt.Sprintf("%s-%s", key, combo[i]))
++		}
++
++		clonedWorkflow := cloneWorkflow(workflow)
++		clonedWorkflow.Matrix = nil
++
++		injectMatrixVars(clonedWorkflow, vars)
++
++		result = append(result, &types.MatrixWorkflow{
++			Name:     strings.Join(nameParts, "-"),
++			Vars:     vars,
++			Workflow: clonedWorkflow,
++		})
++	}
++
++	return result, nil
++}
++
++func cartesianProduct(sets [][]string) [][]string {
++	if len(sets) == 0 {
++		return [][]string{{}}
++	}
++
++	result := [][]string{{}}
++	for _, set := range sets {
++		newResult := make([][]string, 0, len(result)*len(set))
++		for _, item := range set {
++			for _, combo := range result {
++				newCombo := make([]string, len(combo)+1)
++				copy(newCombo, combo)
++				newCombo[len(combo)] = item
++				newResult = append(newResult, newCombo)
++			}
++		}
++		result = newResult
++	}
++
++	return result
++}
++
++func cloneWorkflow(original *types.Workflow) *types.Workflow {
++	cloned := &types.Workflow{
++		When:      original.When,
++		Workspace: original.Workspace,
++		SkipClone: original.SkipClone,
++		Labels:    make(map[string]string),
++	}
++
++	for k, v := range original.Labels {
++		cloned.Labels[k] = v
++	}
++
++	cloned.Clone = make(types.ContainerList, len(original.Clone))
++	for i, c := range original.Clone {
++		cloned.Clone[i] = cloneContainer(c)
++	}
++
++	cloned.Steps = make(types.ContainerList, len(original.Steps))
++	for i, c := range original.Steps {
++		cloned.Steps[i] = cloneContainer(c)
++	}
++
++	cloned.Services = make(types.ContainerList, len(original.Services))
++	for i, c := range original.Services {
++		cloned.Services[i] = cloneContainer(c)
++	}
++
++	return cloned
++}
++
++func cloneContainer(original types.Container) types.Container {
++	cloned := types.Container{
++		Name:        original.Name,
++		Image:       original.Image,
++		Pull:        original.Pull,
++		Directory:   original.Directory,
++		Failure:     original.Failure,
++		Detached:    original.Detached,
++		Privileged:  original.Privileged,
++		NetworkMode: original.NetworkMode,
++	}
++
++	cloned.Commands = make([]string, len(original.Commands))
++	copy(cloned.Commands, original.Commands)
++
++	cloned.Entrypoint = make([]string, len(original.Entrypoint))
++	copy(cloned.Entrypoint, original.Entrypoint)
++
++	cloned.Ports = make([]string, len(original.Ports))
++	copy(cloned.Ports, original.Ports)
++
++	cloned.DNS = make([]string, len(original.DNS))
++	copy(cloned.DNS, original.DNS)
++
++	cloned.DNSSearch = make([]string, len(original.DNSSearch))
++	copy(cloned.DNSSearch, original.DNSSearch)
++
++	cloned.Devices = make([]string, len(original.Devices))
++	copy(cloned.Devices, original.Devices)
++
++	cloned.ExtraHosts = make([]string, len(original.ExtraHosts))
++	copy(cloned.ExtraHosts, original.ExtraHosts)
++
++	cloned.Tmpfs = make([]string, len(original.Tmpfs))
++	copy(cloned.Tmpfs, original.Tmpfs)
++
++	cloned.Settings = make(map[string]any)
++	for k, v := range original.Settings {
++		cloned.Settings[k] = v
++	}
++
++	cloned.Environment = make(map[string]any)
++	for k, v := range original.Environment {
++		cloned.Environment[k] = v
++	}
++
++	cloned.BackendOptions = make(map[string]any)
++	for k, v := range original.BackendOptions {
++		cloned.BackendOptions[k] = v
++	}
++
++	cloned.Volumes = make(types.Volumes, len(original.Volumes))
++	copy(cloned.Volumes, original.Volumes)
++
++	return cloned
++}
++
++func injectMatrixVars(workflow *types.Workflow, vars map[string]string) {
++	for i := range workflow.Clone {
++		injectContainerEnv(&workflow.Clone[i], vars)
++	}
++	for i := range workflow.Steps {
++		injectContainerEnv(&workflow.Steps[i], vars)
++	}
++	for i := range workflow.Services {
++		injectContainerEnv(&workflow.Services[i], vars)
++	}
++}
++
++func injectContainerEnv(container *types.Container, vars map[string]string) {
++	if container.Environment == nil {
++		container.Environment = make(map[string]any)
++	}
++	for k, v := range vars {
++		envKey := fmt.Sprintf("MATRIX_%s", strings.ToUpper(k))
++		container.Environment[envKey] = v
++	}
++}
+diff --git a/pipeline/frontend/yaml/types/matrix.go b/pipeline/frontend/yaml/types/matrix.go
+new file mode 100644
+index 000000000..cf8ac77fd
+--- /dev/null
++++ b/pipeline/frontend/yaml/types/matrix.go
+@@ -0,0 +1,56 @@
++// Copyright 2026 Woodpecker Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package types
++
++type (
++	// Matrix defines a matrix configuration for generating parallel workflows.
++	// Example YAML:
++	//   matrix:
++	//     go: [1.21, 1.22, 1.23]
++	//     os: [linux, windows]
++	Matrix map[string][]string
++
++	// MatrixWorkflow represents a single expanded workflow from matrix expansion.
++	MatrixWorkflow struct {
++		// Name is the generated workflow name, e.g. "go-1.21-os-linux"
++		Name string
++		// Vars contains the matrix variable values for this workflow
++		Vars map[string]string
++		// Workflow is the actual workflow configuration
++		Workflow *Workflow
++	}
++)
++
++// HasMatrix returns true if the matrix has at least one dimension.
++func (m Matrix) HasMatrix() bool {
++	return len(m) > 0
++}
++
++// Dimensions returns the number of dimensions in the matrix.
++func (m Matrix) Dimensions() int {
++	return len(m)
++}
++
++// TotalCombinations calculates the total number of workflow combinations.
++func (m Matrix) TotalCombinations() int {
++	if len(m) == 0 {
++		return 0
++	}
++	total := 1
++	for _, values := range m {
++		total *= len(values)
++	}
++	return total
++}
+diff --git a/pipeline/frontend/yaml/types/workflow.go b/pipeline/frontend/yaml/types/workflow.go
+index 463de873c..0ccd282e1 100644
+--- a/pipeline/frontend/yaml/types/workflow.go
++++ b/pipeline/frontend/yaml/types/workflow.go
+@@ -29,6 +29,7 @@ type (
+ 		Labels    map[string]string    `yaml:"labels,omitempty"`
+ 		DependsOn constraint.DependsOn `yaml:"depends_on,omitempty"`
+ 		SkipClone bool                 `yaml:"skip_clone,omitempty"`
++		Matrix    Matrix               `yaml:"matrix,omitempty"`
+ 		// Deprecated: use when.status. TODO remove in next major.
+ 		RunsOn []string `yaml:"runs_on,omitempty"`
+ 	}
+diff --git a/pipeline/plugin/adapter.go b/pipeline/plugin/adapter.go
+new file mode 100644
+index 000000000..4ec9e1000
+--- /dev/null
++++ b/pipeline/plugin/adapter.go
+@@ -0,0 +1,241 @@
++// Copyright 2026 Woodpecker Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package plugin
++
++import (
++	"context"
++)
++
++// ============================================================================
++// V1 Plugin Interface (Legacy)
++// ============================================================================
++
++// PluginV1 defines the legacy plugin interface.
++// Characteristics:
++// - Uses context.Background() implicitly
++// - Returns raw error without structured metadata
++// - Settings passed as map[string]interface{}
++// - No lifecycle hooks (only Execute)
++type PluginV1 interface {
++	// Name returns the plugin name.
++	Name() string
++
++	// Execute runs the plugin with the given settings.
++	Execute(settings map[string]interface{}) error
++}
++
++// ============================================================================
++// V2 Plugin Interface (New)
++// ============================================================================
++
++// PluginV2 defines the new plugin interface.
++// Characteristics:
++// - Supports context for cancellation and timeout
++// - Returns structured PluginResult with metadata
++// - Settings passed as typed PluginConfig
++// - Supports lifecycle hooks: Initialize, Execute, Cleanup
++type PluginV2 interface {
++	// Name returns the plugin name.
++	Name() string
++
++	// Version returns the plugin version.
++	Version() string
++
++	// Initialize prepares the plugin before execution.
++	Initialize(ctx context.Context, config PluginConfig) error
++
++	// Execute runs the plugin with context support.
++	Execute(ctx context.Context) (*PluginResult, error)
++
++	// Cleanup releases resources after execution.
++	Cleanup(ctx context.Context) error
++}
++
++// PluginConfig contains the configuration for a V2 plugin.
++type PluginConfig struct {
++	Settings map[string]interface{}
++	Workspace string
++	Timeout   int
++	Retries   int
++}
++
++// PluginResult contains the result of a V2 plugin execution.
++type PluginResult struct {
++	ExitCode int
++	Output   string
++	Metadata map[string]interface{}
++}
++
++// ============================================================================
++// Adapter: V1 to V2
++// ============================================================================
++
++// V1ToV2Adapter wraps a V1 plugin to make it compatible with the V2 interface.
++// This allows legacy plugins to run in the new plugin system without modification.
++type V1ToV2Adapter struct {
++	v1Plugin PluginV1
++	config   PluginConfig
++	result   *PluginResult
++}
++
++// NewV1ToV2Adapter creates a new adapter wrapping a V1 plugin.
++func NewV1ToV2Adapter(plugin PluginV1) *V1ToV2Adapter {
++	return &V1ToV2Adapter{
++		v1Plugin: plugin,
++	}
++}
++
++func (a *V1ToV2Adapter) Name() string {
++	return a.v1Plugin.Name()
++}
++
++func (a *V1ToV2Adapter) Version() string {
++	return "v1-legacy"
++}
++
++func (a *V1ToV2Adapter) Initialize(ctx context.Context, config PluginConfig) error {
++	select {
++	case <-ctx.Done():
++		return ctx.Err()
++	default:
++	}
++	a.config = config
++	return nil
++}
++
++func (a *V1ToV2Adapter) Execute(ctx context.Context) (*PluginResult, error) {
++	select {
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	default:
++	}
++
++	err := a.v1Plugin.Execute(a.config.Settings)
++
++	a.result = &PluginResult{
++		ExitCode: 0,
++		Output:   "",
++		Metadata: map[string]interface{}{
++			"adapter": "v1-to-v2",
++			"legacy":  true,
++		},
++	}
++
++	if err != nil {
++		a.result.ExitCode = 1
++		a.result.Output = err.Error()
++	}
++
++	return a.result, err
++}
++
++func (a *V1ToV2Adapter) Cleanup(ctx context.Context) error {
++	select {
++	case <-ctx.Done():
++		return ctx.Err()
++	default:
++	}
++	a.config = PluginConfig{}
++	a.result = nil
++	return nil
++}
++
++// ============================================================================
++// Adapter: V2 to V1 (for backward compatibility)
++// ============================================================================
++
++// V2ToV1Adapter wraps a V2 plugin to make it compatible with the V1 interface.
++// This allows new plugins to run in legacy systems.
++type V2ToV1Adapter struct {
++	v2Plugin PluginV2
++}
++
++// NewV2ToV1Adapter creates a new adapter wrapping a V2 plugin.
++func NewV2ToV1Adapter(plugin PluginV2) *V2ToV1Adapter {
++	return &V2ToV1Adapter{
++		v2Plugin: plugin,
++	}
++}
++
++func (a *V2ToV1Adapter) Name() string {
++	return a.v2Plugin.Name()
++}
++
++func (a *V2ToV1Adapter) Execute(settings map[string]interface{}) error {
++	ctx := context.Background()
++
++	config := PluginConfig{
++		Settings: settings,
++	}
++
++	if err := a.v2Plugin.Initialize(ctx, config); err != nil {
++		return err
++	}
++
++	defer func() {
++		_ = a.v2Plugin.Cleanup(ctx)
++	}()
++
++	_, err := a.v2Plugin.Execute(ctx)
++	return err
++}
++
++// ============================================================================
++// Plugin Registry with Version Detection
++// ============================================================================
++
++// PluginRegistry manages both V1 and V2 plugins.
++type PluginRegistry struct {
++	plugins map[string]PluginV2
++}
++
++// NewPluginRegistry creates a new plugin registry.
++func NewPluginRegistry() *PluginRegistry {
++	return &PluginRegistry{
++		plugins: make(map[string]PluginV2),
++	}
++}
++
++// Register adds a plugin to the registry, automatically adapting V1 plugins.
++func (r *PluginRegistry) Register(plugin any) error {
++	var v2Plugin PluginV2
++
++	switch p := plugin.(type) {
++	case PluginV2:
++		v2Plugin = p
++	case PluginV1:
++		v2Plugin = NewV1ToV2Adapter(p)
++	default:
++		return ErrUnknownPluginType
++	}
++
++	r.plugins[v2Plugin.Name()] = v2Plugin
++	return nil
++}
++
++// Get retrieves a plugin by name.
++func (r *PluginRegistry) Get(name string) (PluginV2, bool) {
++	plugin, ok := r.plugins[name]
++	return plugin, ok
++}
++
++// List returns all registered plugin names.
++func (r *PluginRegistry) List() []string {
++	names := make([]string, 0, len(r.plugins))
++	for name := range r.plugins {
++		names = append(names, name)
++	}
++	return names
++}
+diff --git a/pipeline/plugin/errors.go b/pipeline/plugin/errors.go
+new file mode 100644
+index 000000000..323c92a19
+--- /dev/null
++++ b/pipeline/plugin/errors.go
+@@ -0,0 +1,22 @@
++// Copyright 2026 Woodpecker Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package plugin
++
++import "errors"
++
++var (
++	ErrUnknownPluginType = errors.New("plugin: unknown plugin type, must implement PluginV1 or PluginV2")
++	ErrPluginNotFound    = errors.New("plugin: plugin not found in registry")
++)
+diff --git a/web/src/assets/locales/he.json b/web/src/assets/locales/he.json
+new file mode 100644
+index 000000000..a5ea371c3
+--- /dev/null
++++ b/web/src/assets/locales/he.json
+@@ -0,0 +1,25 @@
++{
++  "global": {
++    "connect_with_provider": "התחבר עם {{provider}}",
++    "user_menu": "תפריט משתמש",
++    "home": "בית",
++    "repos": "מאגרים",
++    "admin": "מנהל",
++    "logout": "התנתק"
++  },
++  "repo": {
++    "pipelines": "צינורות",
++    "settings": "הגדרות",
++    "branches": "ענפים",
++    "pull_requests": "בקשות משיכה"
++  },
++  "pipeline": {
++    "status": {
++      "success": "הצלחה",
++      "failure": "כישלון",
++      "running": "פועל",
++      "pending": "ממתין",
++      "error": "שגיאה"
++    }
++  }
++}
+diff --git a/web/src/compositions/useI18n.ts b/web/src/compositions/useI18n.ts
+index 7bd2c4420..9eb5e3f28 100644
+--- a/web/src/compositions/useI18n.ts
++++ b/web/src/compositions/useI18n.ts
+@@ -5,6 +5,8 @@ import { createI18n } from 'vue-i18n';
+ 
+ import { useDate } from './useDate';
+ 
++const RTL_LOCALES = ['he', 'ar', 'fa', 'ur'];
++
+ export function getUserLanguage(): string {
+   let browserLocale = navigator.language;
+   if (!SUPPORTED_LOCALES.includes(browserLocale)) {
+@@ -39,6 +41,14 @@ export const setI18nLanguage = async (lang: string): Promise<void> => {
+   }
+   i18n.global.locale.value = lang;
+   await setDateLocale(lang);
++
++  if (RTL_LOCALES.includes(lang)) {
++    document.documentElement.dir = 'rtl';
++    document.documentElement.lang = lang;
++  } else {
++    document.documentElement.dir = 'ltr';
++    document.documentElement.lang = lang;
++  }
+ };
+ 
+ loadLocaleMessages(fallbackLocale).catch(console.error);
